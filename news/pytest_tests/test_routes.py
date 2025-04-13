@@ -1,31 +1,38 @@
-# test_routes.py
 from http import HTTPStatus
 
 from django.urls import reverse
-#import pytest_lazyfixture
 import pytest
 from pytest_django.asserts import assertRedirects
 
 
 @pytest.mark.parametrize(
-    'name',  # Имя параметра функции.
-    # Значения, которые будут передаваться в name.
-    ('notes:home', 'users:login', 'users:logout', 'users:signup')
+    'name, args',
+    (
+        # Путь для главной страницы не принимает
+        # никаких позиционных аргументов,
+        # поэтому вторым параметром ставим None.
+        ('news:home', None),
+        # Путь для страницы новости
+        # принимает в качестве позиционного аргумента
+        # id записи
+        ('news:detail', pytest.lazy_fixture('news_pk')),
+        # Имена, по которым доступны нужные страницы,
+        # берём в головном файле yanews/urls.py.
+        ('users:login', None),
+        ('users:logout', None),
+        ('users:signup', None),
+    )
 )
-# Указываем имя изменяемого параметра в сигнатуре теста.
-def test_pages_availability_for_anonymous_user(client, name):
-    url = reverse(name)  # Получаем ссылку на нужный адрес.
-    response = client.get(url)  # Выполняем запрос.
-    assert response.status_code == HTTPStatus.OK
-
-
-@pytest.mark.parametrize(
-    'name',
-    ('notes:list', 'notes:add', 'notes:success')
-)
-def test_pages_availability_for_auth_user(not_author_client, name):
-    url = reverse(name)
-    response = not_author_client.get(url)
+@pytest.mark.django_db
+def test_pages_availability(client, name, args):
+    """
+    Главная страница доступна анонимному пользователю.
+    Страница отдельной новости доступна анонимному пользователю.
+    Страницы регистрации пользователей, входа в учётную запись и
+    выхода из неё доступны анонимным пользователям.
+    """
+    url = reverse(name, args=args)
+    response = client.get(url)
     assert response.status_code == HTTPStatus.OK
 
 
@@ -40,33 +47,35 @@ def test_pages_availability_for_auth_user(not_author_client, name):
 )
 @pytest.mark.parametrize(
     'name',
-    ('notes:detail', 'notes:edit', 'notes:delete'),
+    ('news:edit', 'news:delete'),
 )
 def test_pages_availability_for_different_users(
-        parametrized_client, name, slug_for_args, expected_status
+        parametrized_client, name, comment_id, expected_status
 ):
-    url = reverse(name, args=slug_for_args)
+    """
+    Страницы удаления и редактирования комментария доступны
+    автору комментария.
+    Авторизованный пользователь не может зайти на страницы
+    редактирования или удаления чужих комментариев (возвращается ошибка 404).
+    """
+    url = reverse(name, args=comment_id)
     print(url)
     response = parametrized_client.get(url)
     assert response.status_code == expected_status
 
 
 @pytest.mark.parametrize(
-    'name, args',
-    (
-        ('notes:detail', pytest.lazy_fixture('slug_for_args')),
-        ('notes:edit', pytest.lazy_fixture('slug_for_args')),
-        ('notes:delete', pytest.lazy_fixture('slug_for_args')),
-        ('notes:add', None),
-        ('notes:success', None),
-        ('notes:list', None),
-    ),
+    'name',
+    ('news:edit', 'news:delete'),
 )
-# Передаём в тест анонимный клиент, name проверяемых страниц и args:
-def test_redirects(client, name, args):
+def test_redirects(client, name, comment_id):
+    """
+    При попытке перейти на страницу редактирования
+    или удаления комментария анонимный пользователь
+    перенаправляется на страницу авторизации.
+    """
     login_url = reverse('users:login')
-    # Теперь не надо писать никаких if и можно обойтись одним выражением.
-    url = reverse(name, args=args)
+    url = reverse(name, args=comment_id)
     expected_url = f'{login_url}?next={url}'
     response = client.get(url)
     assertRedirects(response, expected_url)
