@@ -3,8 +3,9 @@ import pytest
 
 from django.conf import settings
 from django.test.client import Client
+from django.urls import reverse
+from django.utils import timezone
 
-# Импортируем модель заметки, чтобы создать экземпляр.
 from news.models import Comment, News
 
 
@@ -63,21 +64,25 @@ def comment_id(comment):
     return (comment.id,)
 
 
-# @pytest.fixture
-# # Фикстура запрашивает другую фикстуру создания заметки.
-# def slug_for_args(note):
-#     # И возвращает кортеж, который содержит slug заметки.
-#     # На то, что это кортеж, указывает запятая в конце выражения.
-#     return (note.slug,)
+@pytest.fixture
+def detail_url(news_pk):
+    return reverse('news:detail', args=news_pk)
 
 
-# Добавляем фикстуру form_data
-# @pytest.fixture
-# def form_data():
-#     return {
-#         'title': 'Новый заголовок',
-#         'text': 'Новый текст',
-#     }
+@pytest.fixture
+def comment_text():
+    return 'Текст комментария'
+
+
+@pytest.fixture
+def comment_new_text():
+    return 'Обновлённый комментарий'
+
+
+@pytest.fixture
+def comment_form_data(comment_new_text):
+    return {'text': comment_new_text}
+
 
 @pytest.fixture
 def news_set():
@@ -93,3 +98,20 @@ def news_set():
         for index in range(settings.NEWS_COUNT_ON_HOME_PAGE + 1)
     ]
     return News.objects.bulk_create(all_news)
+
+
+@pytest.fixture
+def comment_set(news, author):
+    # Запоминаем текущее время:
+    now = timezone.now()
+    # Создаём комментарии в цикле.
+    for index in range(10):
+        # Создаём объект и записываем его в переменную.
+        comment = Comment.objects.create(
+            news=news, author=author, text=f'Tекст {index}',
+        )
+        # Сразу после создания меняем время создания комментария.
+        comment.created = now + timedelta(days=index)
+        # И сохраняем эти изменения.
+        comment.save()
+    return Comment.objects.all()

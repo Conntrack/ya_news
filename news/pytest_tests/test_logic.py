@@ -1,121 +1,122 @@
-# test_logic.py
 from http import HTTPStatus
-# Дополнительно импортируем функцию slugify.
-from pytils.translit import slugify
 
 import pytest
 from pytest_django.asserts import assertRedirects, assertFormError
 from django.urls import reverse
 
-from notes.models import Note
-# Импортируем из модуля forms сообщение об ошибке:
-from notes.forms import WARNING
+from news.forms import BAD_WORDS, WARNING
+from news.models import Comment
 
 
-# Указываем фикстуру form_data в параметрах теста.
-def test_user_can_create_note(author_client, author, form_data):
-    url = reverse('notes:add')
-    # В POST-запросе отправляем данные, полученные из фикстуры form_data:
-    response = author_client.post(url, data=form_data)
-    # Проверяем, что был выполнен редирект на страницу успешного добавления заметки:
-    assertRedirects(response, reverse('notes:success'))
-    # Считаем общее количество заметок в БД, ожидаем 1 заметку.
-    assert Note.objects.count() == 1
-    # Чтобы проверить значения полей заметки - 
-    # получаем её из базы при помощи метода get():
-    new_note = Note.objects.get()
-    # Сверяем атрибуты объекта с ожидаемыми.
-    assert new_note.title == form_data['title']
-    assert new_note.text == form_data['text']
-    assert new_note.slug == form_data['slug']
-    assert new_note.author == author
-    # Вроде бы здесь нарушен принцип "один тест - одна проверка";
-    # но если хоть одна из этих проверок провалится - 
-    # весь тест можно признать провалившимся, а последующие невыполненные проверки
-    # не внесли бы в отчёт о тесте ничего принципиально важного.
-
-# Добавляем маркер, который обеспечит доступ к базе данных:
+@pytest.mark.parametrize(
+    'parametrized_client, expected_comments_count',
+    (
+        (pytest.lazy_fixture('client'), 0),
+        (pytest.lazy_fixture('author_client'), 1)
+    ),
+)
 @pytest.mark.django_db
-def test_anonymous_user_cant_create_note(client, form_data):
-    url = reverse('notes:add')
-    # Через анонимный клиент пытаемся создать заметку:
-    response = client.post(url, data=form_data)
-    login_url = reverse('users:login')
-    expected_url = f'{login_url}?next={url}'
-    # Проверяем, что произошла переадресация на страницу логина:
-    assertRedirects(response, expected_url)
-    # Считаем количество заметок в БД, ожидаем 0 заметок.
-    assert Note.objects.count() == 0
+def test_anonymous_user_cant_create_comment(
+        parametrized_client, expected_comments_count,
+        detail_url, comment_form_data
+):
+    """
+    Анонимный пользователь не может отправить комментарий.
+    Авторизованный пользователь может отправить комментарий.
+    """
+    # в POST-запросе отправляем
+    # предварительно подготовленные данные формы с текстом комментария.
+    parametrized_client.post(detail_url, data=comment_form_data)
+    # Считаем количество комментариев.
+    comments_count = Comment.objects.count()
+    # Ожидаем, что комментариев в базе нет - сравниваем с нулём.
+    assert comments_count == expected_comments_count
 
 
-# Вызываем фикстуру отдельной заметки, чтобы в базе появилась запись.
-def test_not_unique_slug(author_client, note, form_data):
-    url = reverse('notes:add')
-    # Подменяем slug новой заметки на slug уже существующей записи:
-    form_data['slug'] = note.slug
-    # Пытаемся создать новую заметку:
-    response = author_client.post(url, data=form_data)
-    # Проверяем, что в ответе содержится ошибка формы для поля slug:
-    assertFormError(response, 'form', 'slug', errors=(note.slug + WARNING))
-    # Убеждаемся, что количество заметок в базе осталось равным 1:
-    assert Note.objects.count() == 1
+def test_user_cant_use_bad_words(author_client, detail_url):
+    """
+    Если комментарий содержит запрещённые слова, он не будет опубликован,
+    а форма вернёт ошибку.
+    """
+    # Формируем данные для отправки формы; текст включает
+    # первое слово из списка стоп-слов.
+    bad_words_data = {'text': f'Какой-то текст, {BAD_WORDS[0]}, еще текст'}
+    # Отправляем запрос через авторизованный клиент.
+    response = author_client.post(detail_url, data=bad_words_data)
+    # Проверяем, есть ли в ответе ошибка формы.
+    assertFormError(
+        response,
+        form='form',
+        field='text',
+        errors=WARNING
+    )
+    # Дополнительно убедимся, что комментарий не был создан.
+    comments_count = Comment.objects.count()
+    assert comments_count == 0
 
 
-def test_empty_slug(author_client, form_data):
-    url = reverse('notes:add')
-    # Убираем поле slug из словаря:
-    form_data.pop('slug')
-    response = author_client.post(url, data=form_data)
-    # Проверяем, что даже без slug заметка была создана:
-    assertRedirects(response, reverse('notes:success'))
-    assert Note.objects.count() == 1
-    # Получаем созданную заметку из базы:
-    new_note = Note.objects.get()
-    # Формируем ожидаемый slug:
-    expected_slug = slugify(form_data['title'])
-    # Проверяем, что slug заметки соответствует ожидаемому:
-    assert new_note.slug == expected_slug
+@pytest.mark.parametrize(
+    'parametrized_client, expected_comments_count',
+    (
+        (
+            pytest.lazy_fixture('not_author_client'),
+            1,
+        ),
+        (
+            pytest.lazy_fixture('author_client'),
+            0,
+        )
+    ),
+)
+def test_possibility_to_delete_for_different_users(
+        parametrized_client, comment_id,
+        detail_url, expected_comments_count
+):
+    """
+    Авторизованный пользователь может удалять свои комментарии.
+    Авторизованный пользователь не может удалять чужие комментарии.
+    """
+    action_url = reverse('news:delete', args=comment_id)
+    url_to_comments = detail_url + '#comments'
+    response = parametrized_client.delete(action_url)
+    # Проверяем, что редирект привёл к разделу с комментариями.
+    # Заодно проверим статус-коды ответов.
+    if response.status_code == HTTPStatus.FOUND:
+        assertRedirects(response, url_to_comments)
+    else:
+        assert response.status_code == HTTPStatus.NOT_FOUND
+    # Считаем количество комментариев в системе.
+    comments_count = Comment.objects.count()
+    assert comments_count == expected_comments_count
 
 
-# В параметрах вызвана фикстура note: значит, в БД создана заметка.
-def test_author_can_edit_note(author_client, form_data, note):
-    # Получаем адрес страницы редактирования заметки:
-    url = reverse('notes:edit', args=(note.slug,))
-    # В POST-запросе на адрес редактирования заметки
-    # отправляем form_data - новые значения для полей заметки:
-    response = author_client.post(url, form_data)
-    # Проверяем редирект:
-    assertRedirects(response, reverse('notes:success'))
-    # Обновляем объект заметки note: получаем обновлённые данные из БД:
-    note.refresh_from_db()
-    # Проверяем, что атрибуты заметки соответствуют обновлённым:
-    assert note.title == form_data['title']
-    assert note.text == form_data['text']
-    assert note.slug == form_data['slug']
-
-
-def test_other_user_cant_edit_note(not_author_client, form_data, note):
-    url = reverse('notes:edit', args=(note.slug,))
-    response = not_author_client.post(url, form_data)
-    # Проверяем, что страница не найдена:
-    assert response.status_code == HTTPStatus.NOT_FOUND
-    # Получаем новый объект запросом из БД.
-    note_from_db = Note.objects.get(id=note.id)
-    # Проверяем, что атрибуты объекта из БД равны атрибутам заметки до запроса.
-    assert note.title == note_from_db.title
-    assert note.text == note_from_db.text
-    assert note.slug == note_from_db.slug
-
-
-def test_author_can_delete_note(author_client, slug_for_args):
-    url = reverse('notes:delete', args=slug_for_args)
-    response = author_client.post(url)
-    assertRedirects(response, reverse('notes:success'))
-    assert Note.objects.count() == 0
-
-
-def test_other_user_cant_delete_note(not_author_client, slug_for_args):
-    url = reverse('notes:delete', args=slug_for_args)
-    response = not_author_client.post(url)
-    assert response.status_code == HTTPStatus.NOT_FOUND
-    assert Note.objects.count() == 1
+@pytest.mark.parametrize(
+    'parametrized_client, expected_comment_text',
+    (
+        (
+            pytest.lazy_fixture('not_author_client'),
+            pytest.lazy_fixture('comment_text'),
+        ),
+        (
+            pytest.lazy_fixture('author_client'),
+            pytest.lazy_fixture('comment_new_text'),
+        )
+    ),
+)
+def test_possibility_to_edit_for_different_users(
+        parametrized_client, comment_id, comment_form_data,
+        detail_url, expected_comment_text
+):
+    """
+    Авторизованный пользователь может редактировать свои комментарии.
+    Авторизованный пользователь не может редактировать чужие комментарии.
+    """
+    action_url = reverse('news:edit', args=comment_id)
+    url_to_comments = detail_url + '#comments'
+    response = parametrized_client.post(action_url, data=comment_form_data)
+    if response.status_code == HTTPStatus.FOUND:
+        assertRedirects(response, url_to_comments)
+    else:
+        assert response.status_code == HTTPStatus.NOT_FOUND
+    comment = Comment.objects.get()
+    assert comment.text == expected_comment_text
